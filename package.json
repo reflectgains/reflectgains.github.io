@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "description": "Small app to show token reflection gains.",
-  "main": "dist/app.js",
+  "main": "docs/app.js",
   "scripts": {
-    "start": "esbuild src/app.tsx --bundle --outdir=dist --servedir=dist --sourcemap",
-    "build": "esbuild src/app.tsx --bundle --minify --sourcemap --outdir=dist",
+    "start": "esbuild src/app.tsx --bundle --outdir=docs --servedir=docs --sourcemap",
+    "build": "esbuild src/app.tsx --bundle --minify --sourcemap --outdir=docs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Daniel Taylor",
