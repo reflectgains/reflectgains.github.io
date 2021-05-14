@@ -121,6 +121,15 @@ td.num {
   text-align: center;
 }
 
+.github-fork-ribbon:before {
+  background-color: #98a886;
+  transition: background 0.3s ease-in-out;
+}
+
+.github-fork-ribbon:hover:before {
+  background-color: #7c8e67;
+}
+
 .loader,
 .loader:after {
   border-radius: 50%;
