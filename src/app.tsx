@@ -251,8 +251,8 @@ function App() {
           <div className="row mb1">
             <div className="col" style={{width: "100%"}}>
               <div className="row">
-                <label htmlFor="wallet">Wallet</label>
-                <input id="wallet" type="text" placeholder="Enter wallet address..." value={account} onChange={(e) => setAccount(e.target.value)}/>
+                <label htmlFor="wallet">Public address</label>
+                <input id="wallet" type="text" placeholder="Enter PUBLIC token wallet address..." value={account} onChange={(e) => setAccount(e.target.value)}/>
               </div>
               <div className="row">
                 <label htmlFor="balance">Balance</label>
