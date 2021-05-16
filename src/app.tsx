@@ -27,13 +27,33 @@ async function loadWallet(): Promise<string> {
 // Get the balance of a smart contract from the wallet account. If the smart
 // contract implements the `decimals` function this will also return the number
 // of decimals.
-async function getBalance(account: string, contract: string): Promise<[BigNumber, BigNumber]> {
+async function getWalletBalance(account: string, contract: string): Promise<[BigNumber, BigNumber]> {
   const provider = new ethers.providers.Web3Provider(window.ethereum)
   const ct = new ethers.Contract(contract, ABI, provider)
   const balance = await ct.balanceOf(account)
   const decimals = await ct.decimals()
 
   return [balance, decimals]
+}
+
+// Get the balance of a smart contract from an API call.
+async function getBalance(account: string, contract: string): Promise<[BigNumber, BigNumber]> {
+  const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-balances ', {
+    method: "post",
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      chain_id: 56,
+      address: account,
+    })
+  })
+  const parsed = await resp.json()
+  for (const token of parsed.data.items) {
+    if (token.contract_address === contract) {
+      return [ethers.BigNumber.from(token.balance), ethers.BigNumber.from(token.contract_decimals)]
+    }
+  }
 }
 
 // Represents a single transfer of tokens from one address to another.
@@ -132,24 +152,19 @@ function App() {
   const [account, setAccount] = useState<string>('')
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [balance, setBalance] = useState<string>('0')
-  const [manualBalance, setManualBalance] = useState<string>('0')
   const [bought, setBought] = useState<string>('0')
   const [decimals, setDecimals] = useState<number>(18)
   const [tokenInfo, setTokenInfo] = useState<TokenInfo|null>(null)
   const [analyze, setAnalyze] = useState<boolean>(false)
   const [copied, setCopied] = useState<boolean>(false)
-
-  if (error) {
-    return (
-      <div>Error: {error}</div>
-    )
-  }
+  const [loading, setLoading] = useState<boolean>(false)
 
   // Try to get the token info anytime the contract address changes.
   useEffect(async () => {
     try {
       const info = await getTokenInfo(contract)
       setTokenInfo(info)
+      setLoading(false)
     } catch (e) {
       setError(e)
     }
@@ -177,7 +192,18 @@ function App() {
 
     setTransactions(transactions)
     setBought(count.toString())
+    setLoading(false)
+
+    if (transactions.length === 0) {
+      setError("No transactions found")
+    }
   }, [analyze])
+
+  if (error) {
+    return (
+      <div>Error: {error}<br/><a href="#" onClick={(e) => {e.preventDefault(); window.location.reload()}}>Try again</a></div>
+    )
+  }
 
   // Show a loading spinner until we get the token info.
   if (!tokenInfo) {
@@ -197,11 +223,13 @@ function App() {
   // Handler for wallet mode. Get the wallet and token info, then sets analyze
   // so that the transaction analysis runs and reports the results.
   const onConnectWallet = async (e: Event) => {
+    setLoading(true)
+
     const act = await loadWallet()
     setAccount(act)
     setAnalyze(true)
 
-    const [bal, dec] = await getBalance(act, contract)
+    const [bal, dec] = await getWalletBalance(act, contract)
     setBalance(bal.toString())
     setDecimals(dec.toNumber())
   }
@@ -210,10 +238,11 @@ function App() {
   // analysis.
   const onAnalyze = async (e: Event) => {
     e.preventDefault()
+    setLoading(true)
+    const [bal, dec] = await getBalance(account, contract)
+    setBalance(bal.toString())
+    setDecimals(dec.toNumber())
     setAnalyze(true)
-    // Update the balance from the manual balance. This converts from the normal
-    // human decimal representation to the large integer used internally.
-    setBalance(ethers.utils.parseUnits(manualBalance, decimals.toString()).toString())
   }
 
   // Convert a number of tokens into USD at the current price.
@@ -237,16 +266,17 @@ function App() {
   return (
     <div className="col" style={{maxWidth: '800px', margin: 'auto'}}>
       <h1>Calculate {tokenInfo.symbol} Gains</h1>
+      <div class="contract">Contract address: {contract}</div>
       <p>
         Some crypto coins have a tax on transactions, part of which may be reflected back to the user in the form of more tokens. This tool calculates how many tokens you have made and how much they are currently worth.
       </p>
-      {!manual && !analyze && (
+      {!manual && !loading && transactions.length === 0 && (
       <div className="col mb1" style={{textAlign: 'center'}}>
         <a className="button" onClick={onConnectWallet}>Connect Wallet</a>
         <a href="#" style={{textTransform: 'uppercase'}} onClick={toggleManual}>enter manually instead</a>
       </div>
       )}
-      {manual && !analyze && (
+      {manual && !loading && transactions.length === 0 && (
         <div className="col mb1">
           <div className="row mb1">
             <div className="col" style={{width: "100%"}}>
@@ -254,20 +284,12 @@ function App() {
                 <label htmlFor="wallet">Public address</label>
                 <input id="wallet" type="text" placeholder="Enter PUBLIC token wallet address..." value={account} onChange={(e) => setAccount(e.target.value)}/>
               </div>
-              <div className="row">
-                <label htmlFor="balance">Balance</label>
-                <input id="balance" type="number" placeholder="Token balance..." value={manualBalance} onChange={(e) => setManualBalance(e.target.value)}/>
-              </div>
-              <div className="row">
-                <label htmlFor="decimals">Decimals</label>
-                <input id="decimals" type="number" placeholder="Decimal places..." value={decimals} onChange={(e) => setDecimals(parseInt(e.target.value || '0'))}/>
-              </div>
             </div>
           </div>
           <button onClick={onAnalyze} disabled={!account}>Analyze</button>
         </div>
       )}
-      {analyze && transactions.length == 0 && (
+      {loading && transactions.length == 0 && (
         <div className="loader">Loading Transactions...</div>
       )}
       {transactions.length > 0 && (

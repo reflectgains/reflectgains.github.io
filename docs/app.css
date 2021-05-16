@@ -92,6 +92,12 @@ td.num {
   text-align: right;
 }
 
+.contract {
+  color: #aaa;
+  font-size: 60%;
+  margin-top: -6px;
+}
+
 .sell {
   color: #a22c29;
 }
