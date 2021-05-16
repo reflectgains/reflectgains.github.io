@@ -266,7 +266,7 @@ function App() {
   return (
     <div className="col" style={{maxWidth: '800px', margin: 'auto'}}>
       <h1>Calculate {tokenInfo.symbol} Gains</h1>
-      <div class="contract">Contract address: {contract}</div>
+      <div className="contract">Contract address: {contract}</div>
       <p>
         Some crypto coins have a tax on transactions, part of which may be reflected back to the user in the form of more tokens. This tool calculates how many tokens you have made and how much they are currently worth.
       </p>
