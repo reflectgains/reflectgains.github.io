@@ -21,7 +21,7 @@ First off, is it safe to share your **public** wallet address? Yes. Crypto walle
 1. Public key or address
 2. Private key
 
-You can share the public key anywhere you want without worry of losing money. No transaction can be made from your wallet without the private key. **NEVER** share the private key with anyone, ever. You may know the private key as a 12 or 24 work mnemonic.
+You can share the public key anywhere you want without worry of losing money. No transaction can be made from your wallet without the private key. **NEVER** share the private key with anyone, ever. You may know the private key as a 12 or 24 word mnemonic.
 
 What this app does is all stuff you can do by hand. Why use the app?
 
@@ -46,3 +46,7 @@ $ npm start
 ```
 
 Then open the browser to e.g. http://localhost:8000/#0xaad87f47cdea777faf87e7602e91e3a6afbe4d57
+
+## Support the Author
+
+If you would like to thank or support the author, you may send any ERC-20/BEP-20 (Ethereum or Binance) compatible token to `0x75289376fC9eB00833C6EDa235e019E286E1eeFD`. Thank you!
