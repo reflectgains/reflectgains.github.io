@@ -1,7 +1,9 @@
 import * as ReactDOM from 'react-dom'
 
-import { BigNumber, ethers } from 'ethers'
 import React, {useEffect, useState} from 'react'
+
+import Number from './number'
+import { ethers } from 'ethers'
 
 const dateOptions = { year: 'numeric', month: 'long', day: 'numeric' };
 
@@ -27,7 +29,7 @@ async function loadWallet(): Promise<string> {
 // Get the balance of a smart contract from the wallet account. If the smart
 // contract implements the `decimals` function this will also return the number
 // of decimals.
-async function getWalletBalance(account: string, contract: string): Promise<[BigNumber, BigNumber]> {
+async function getWalletBalance(account: string, contract: string): Promise<[ethers.BigNumber, ethers.BigNumber]> {
   const provider = new ethers.providers.Web3Provider(window.ethereum)
   const ct = new ethers.Contract(contract, ABI, provider)
   const balance = await ct.balanceOf(account)
@@ -37,7 +39,7 @@ async function getWalletBalance(account: string, contract: string): Promise<[Big
 }
 
 // Get the balance of a smart contract from an API call.
-async function getBalance(account: string, contract: string): Promise<[BigNumber, BigNumber]> {
+async function getBalance(account: string, contract: string): Promise<[ethers.BigNumber, ethers.BigNumber]> {
   const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-balances ', {
     method: "post",
     headers: {
@@ -108,8 +110,8 @@ async function getTokenInfo(contract: string): Promise<TokenInfo> {
 
 // Format a BigNumber to a number with two decimal places given the number
 // of decimals from a smart contract token.
-function formatNum(value: ethers.BigNumberish, decimals: number): string {
-  const tmp = ethers.utils.commify(ethers.utils.formatUnits(value, decimals))
+function formatNum(value: ethers.BigNumberish, decimals: number, div: number = 1): string {
+  const tmp = ethers.utils.commify(ethers.utils.formatUnits(ethers.BigNumber.from(value).div(div.toString()), decimals))
   const parts = tmp.split('.')
   if (parts.length === 1) {
     return `${parts[0]}.00`
@@ -158,6 +160,29 @@ function App() {
   const [analyze, setAnalyze] = useState<boolean>(false)
   const [copied, setCopied] = useState<boolean>(false)
   const [loading, setLoading] = useState<boolean>(false)
+
+  // Find the minimum length of the token numbers we will display.
+  let min = Infinity;
+  if (balance.length < min) {
+    min = balance.length
+  }
+  if (bought.length < min) {
+    min = bought.length
+  }
+  for (const tx of transactions) {
+    if (tx.value.length < min) {
+      min = tx.value.length
+    }
+  }
+
+  // Use the minimum length to determine if we should use a suffix to make
+  // the numbers easier to read.
+  let suffix = ''
+  if (min - decimals > 6) {
+    suffix = 'M'
+  } else if (min - decimals > 3) {
+    suffix = 'K'
+  }
 
   // Try to get the token info anytime the contract address changes.
   useEffect(async () => {
@@ -252,13 +277,12 @@ function App() {
   }
 
   // Get the difference and balances if possible.
-  let diff = '0'
+  let diff: ethers.BigNumber = ethers.BigNumber.from('0')
   let diffUSD = '0'
   let balanceUSD = '0'
   if (balance !== '0') {
-    const d = ethers.BigNumber.from(balance).sub(ethers.BigNumber.from(bought))
-    diff = formatNum(d, decimals)
-    diffUSD = getUSD(d)
+    diff = ethers.BigNumber.from(balance).sub(ethers.BigNumber.from(bought))
+    diffUSD = getUSD(diff)
     balanceUSD = getUSD(balance)
   }
 
@@ -305,17 +329,17 @@ function App() {
           <tbody>
             <tr>
               <th>Balance</th>
-              <td className="num">{formatNum(balance, decimals)}</td>
+              <td className="num"><Number value={balance} decimals={decimals} suffix={suffix}/></td>
               <td className="num">${balanceUSD}</td>
             </tr>
             <tr>
               <th>Bought</th>
-              <td className="num">{formatNum(bought, decimals)}</td>
+              <td className="num"><Number value={bought} decimals={decimals} suffix={suffix}/></td>
               <td className="num">-</td>
             </tr>
             <tr>
               <th>Difference</th>
-              <td className="num">{diff}</td>
+              <td className="num"><Number value={diff} decimals={decimals} suffix={suffix}/></td>
               <td className="num">${diffUSD}</td>
             </tr>
           </tbody>
@@ -342,7 +366,7 @@ function App() {
                   <td title={d.toISOString()}>{d.toLocaleString(navigator.language, dateOptions)}</td>
                   <td><a href={"https://bscscan.com/tx/" + tx.hash}>{tx.hash.substr(0, 8)}</a></td>
                   <td className="num"><a href={"https://bscscan.com/block/" + tx.blockNumber}>{tx.blockNumber}</a></td>
-                  <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`}>{formatNum(tx.value, decimals)}</td>
+                  <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`}><Number value={ethers.BigNumber.from(tx.value)} decimals={decimals} suffix={suffix}/></td>
                   <td className="num">${getUSD(tx.value)}</td>
                 </tr>
               )
