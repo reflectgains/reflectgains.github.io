@@ -136,6 +136,13 @@ td.num {
   background-color: #7c8e67;
 }
 
+.sliderLabel {
+  color: #bbb;
+  font-size: 10pt;
+  text-align: center;
+  margin-top: -20px;
+}
+
 .loader,
 .loader:after {
   border-radius: 50%;

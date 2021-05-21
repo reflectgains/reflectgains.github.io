@@ -18,6 +18,9 @@ const ABI: string[] = [
 
   // Get the number of decimals for the number of tokens
   "function decimals() view returns (uint)",
+
+  // Get the total number of tokens that exist
+  "function totalSupply() view returns (uint)"
 ]
 
 // Load the wallet if allowed by the user. This returns the wallet account ID.
@@ -36,6 +39,18 @@ async function getWalletBalance(account: string, contract: string): Promise<[eth
   const decimals = await ct.decimals()
 
   return [balance, decimals]
+}
+
+// Get the current circulating supply of tokens from the contract, subtracting
+// any balances of known dead wallets that tokens may have been "burned" to.
+async function getCirculatingSupply(contract: string): Promise<ethers.BigNumber> {
+  const provider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed3.binance.org/', 56)
+  const ct = new ethers.Contract(contract, ABI, provider)
+
+  const total = await ct.totalSupply()
+  const dead = await ct.balanceOf('0x000000000000000000000000000000000000dead')
+
+  return total.sub(dead)
 }
 
 // Get the balance of a smart contract from an API call.
@@ -81,7 +96,7 @@ interface Transaction {
 // Get a list of transactions for a smart contract where the given wallet
 // address is either the sender or receiver.
 async function getTransactions(account: string, contract: string): Promise<Transaction[]> {
-  const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-transactions ', {
+  const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-transactions', {
     method: "post",
     headers: {
       'content-type': 'application/json',
@@ -100,26 +115,33 @@ interface TokenInfo {
   symbol: string
   price: string
   price_BNB: string
+  supply: ethers.BigNumber
 }
 
 // Get the token info from a smart contract address.
 async function getTokenInfo(contract: string): Promise<TokenInfo> {
   const resp = await fetch('https://api.pancakeswap.info/api/v2/tokens/' + contract)
-  return (await resp.json()).data
+  const data = (await resp.json()).data
+
+  data.supply = await getCirculatingSupply(contract)
+
+  return data
 }
 
-// Format a BigNumber to a number with two decimal places given the number
-// of decimals from a smart contract token.
-function formatNum(value: ethers.BigNumberish, decimals: number, div: number = 1): string {
-  const tmp = ethers.utils.commify(ethers.utils.formatUnits(ethers.BigNumber.from(value).div(div.toString()), decimals))
-  const parts = tmp.split('.')
-  if (parts.length === 1) {
-    return `${parts[0]}.00`
-  }
-  if (parts[1].length < 2) {
-    parts[1] += '0'
-  }
-  return `${parts[0]}.${parts[1].substr(0, 2)}`
+interface TopCoin {
+  name: string
+  code: string
+  cap: number
+}
+
+async function getTopCoins(): Promise<TopCoin[]> {
+  const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/top-coins', {
+    method: "post",
+    headers: {
+      'content-type': 'application/json',
+    },
+  })
+  return await resp.json()
 }
 
 // Format a numeric string as a fixed two-decimal point number. No rounding
@@ -155,8 +177,12 @@ function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [balance, setBalance] = useState<string>('0')
   const [bought, setBought] = useState<string>('0')
+  const [totalBought, setTotalBought] = useState<string>('0')
+  const [totalSold, setTotalSold] = useState<string>('0')
   const [decimals, setDecimals] = useState<number>(18)
   const [tokenInfo, setTokenInfo] = useState<TokenInfo|null>(null)
+  const [topCoins, setTopCoins] = useState<TopCoin[]>([])
+  const [topCoin, setTopCoin] = useState<number>(49)
   const [analyze, setAnalyze] = useState<boolean>(false)
   const [copied, setCopied] = useState<boolean>(false)
   const [loading, setLoading] = useState<boolean>(false)
@@ -188,7 +214,10 @@ function App() {
   useEffect(async () => {
     try {
       const info = await getTokenInfo(contract)
+      const top = await getTopCoins()
+
       setTokenInfo(info)
+      setTopCoins(top)
       setLoading(false)
     } catch (e) {
       setError(e)
@@ -205,18 +234,25 @@ function App() {
     const transactions = await getTransactions(account, contract)
 
     let count = ethers.BigNumber.from(0)
+    let positive = ethers.BigNumber.from(0)
+    let negative = ethers.BigNumber.from(0)
     for (const txn of transactions) {
+      const value = ethers.BigNumber.from(txn.value)
       if (txn.to.toLowerCase() === account.toLowerCase()) {
         // Moving tokens to this wallet.
-        count = count.add(ethers.BigNumber.from(txn.value))
+        count = count.add(value)
+        positive = positive.add(value)
       } else {
         // Moving tokens away from this wallet.
-        count = count.sub(ethers.BigNumber.from(txn.value))
+        count = count.sub(value)
+        negative = negative.sub(value)
       }
     }
 
     setTransactions(transactions)
     setBought(count.toString())
+    setTotalBought(positive.toString())
+    setTotalSold(negative.toString())
     setLoading(false)
 
     if (transactions.length === 0) {
@@ -251,12 +287,12 @@ function App() {
     setLoading(true)
 
     const act = await loadWallet()
-    setAccount(act)
-    setAnalyze(true)
-
     const [bal, dec] = await getWalletBalance(act, contract)
+
+    setAccount(act)
     setBalance(bal.toString())
     setDecimals(dec.toNumber())
+    setAnalyze(true)
   }
 
   // Handler for manual mode. Convert manual balance and run the transaction
@@ -270,10 +306,22 @@ function App() {
     setAnalyze(true)
   }
 
+  const price = tokenInfo && ethers.utils.parseEther(tokenInfo.price.substr(0, 18)) || '0'
+  const mcap = tokenInfo && tokenInfo.supply.mul(price) || '1'
+
   // Convert a number of tokens into USD at the current price.
-  const getUSD = (value: ethers.BigNumberish): string => {
-    const p = ethers.utils.parseEther(tokenInfo.price.substr(0, 18))
-    return formatCurrency(ethers.utils.formatUnits(ethers.BigNumber.from(value).mul(p), decimals + 18))
+  const getUSD = (tokens: ethers.BigNumberish): string => {
+    return formatCurrency(ethers.utils.formatUnits(ethers.BigNumber.from(tokens).mul(price), decimals + 18))
+  }
+
+  const scaleBalance = (newMCap: ethers.BigNumberish): string => {
+    // Multiply the current balance by the ratio of the new to old market cap
+    // values as big numbers.
+    let multiplyer = ethers.BigNumber.from('1000000000000000000')
+    for (let i = 0; i < decimals; i++) {
+      multiplyer = multiplyer.mul(10)
+    }
+    return getUSD(ethers.BigNumber.from(newMCap).mul(multiplyer).div(mcap.toString() === '0' ? '1' : mcap).mul(balance))
   }
 
   // Get the difference and balances if possible.
@@ -327,24 +375,64 @@ function App() {
             </tr>
           </thead>
           <tbody>
+            {totalSold != '0' && (
+              <tr>
+                <th>Total Bought</th>
+                <td className="num"><Number value={totalBought} decimals={decimals} suffix={suffix}/></td>
+                <td className="num">-</td>
+              </tr>
+            )}
+            {totalSold != '0' && (
+              <tr>
+                <th>Total Sold</th>
+                <td className="num"><Number value={totalSold} decimals={decimals} suffix={suffix}/></td>
+                <td className="num">-</td>
+              </tr>
+            )}
             <tr>
-              <th>Balance</th>
-              <td className="num"><Number value={balance} decimals={decimals} suffix={suffix}/></td>
-              <td className="num">${balanceUSD}</td>
-            </tr>
-            <tr>
-              <th>Bought</th>
+              <th>Net Bought</th>
               <td className="num"><Number value={bought} decimals={decimals} suffix={suffix}/></td>
               <td className="num">-</td>
             </tr>
             <tr>
-              <th>Difference</th>
+              <th>Current Balance</th>
+              <td className="num"><Number value={balance} decimals={decimals} suffix={suffix}/></td>
+              <td className="num">${balanceUSD}</td>
+            </tr>
+            <tr>
+              <th>Gains</th>
               <td className="num"><Number value={diff} decimals={decimals} suffix={suffix}/></td>
               <td className="num">${diffUSD}</td>
             </tr>
           </tbody>
         </table>
-        <h2>Transactions</h2>
+        <h2>Top Coins Comparison</h2>
+        <p>
+          See how your current balance in USD scales if this coin makes it into the top list by market cap. The current market cap is ${tokenInfo && getUSD(tokenInfo.supply).split('.')[0] || 0} with a circulating supply of <Number value={tokenInfo && tokenInfo.supply || '0'} decimals={decimals} suffix={suffix}/> tokens. You own {tokenInfo && ethers.utils.formatUnits(ethers.BigNumber.from(balance).mul('10000000').div(tokenInfo.supply), '3')}<span title="per ten thousand">‱</span> of the circulating supply.
+        </p>
+        <table style={{width: '100%'}}>
+          <thead>
+            <tr>
+              <th style={{width: '14%'}}></th>
+              <th style={{width: '26%'}}>Token</th>
+              <th style={{width: '30%'}}>Market Cap</th>
+              <th style={{width: '30%'}}>Potential USD</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Top {topCoin+1}</th>
+              <td><a href={'https://www.livecoinwatch.com/price/' + topCoins[topCoin].name + '-' + topCoins[topCoin].code}>{topCoins[topCoin].name}</a></td>
+                <td className="num">${formatCurrency(topCoins[topCoin].cap.toString()).split('.')[0]}</td>
+                <td className="num">${scaleBalance(topCoins[topCoin].cap.toString())}</td>
+            </tr>
+          </tbody>
+        </table>
+        <input type="range" min="0" max="99" value={topCoin} onChange={(e) => setTopCoin(parseInt(e.target.value))}/>
+        <p className="sliderLabel">
+          Move the slider to pick the top coin to compare against.
+        </p>
+        <h2>Your Transactions</h2>
         <p>
           The following transactions were found for the given wallet address.
         </p>
