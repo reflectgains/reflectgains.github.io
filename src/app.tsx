@@ -118,10 +118,36 @@ interface TokenInfo {
   supply: ethers.BigNumber
 }
 
+// Try to get the LiveCoinWatch price for the token symbol, which is usually
+// much more accurate than cached PancakeSwap data. If this fails, we can
+// always fall back on PancakeSwap.
+async function tryGetLCWPrice(symbol: string): Promise<any> {
+  const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-price', {
+    method: "post",
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      code: symbol,
+    }),
+  })
+  return await resp.json()
+}
+
 // Get the token info from a smart contract address.
 async function getTokenInfo(contract: string): Promise<TokenInfo> {
   const resp = await fetch('https://api.pancakeswap.info/api/v2/tokens/' + contract)
   const data = (await resp.json()).data
+
+  try {
+    // If the token is on LiveCoinWatch, try to get a more accurate/realtime
+    // price.
+    const lcw = await tryGetLCWPrice(data.symbol)
+    data.price = lcw.rate.toFixed(18).toString()
+  } catch (err) {
+    // Ignore for now, probably not on LiveCoinWatch yet or the symbol doesn't
+    // match the LCW code for the token.
+  }
 
   data.supply = await getCirculatingSupply(contract)
 
@@ -455,7 +481,7 @@ function App() {
                   <td><a href={"https://bscscan.com/tx/" + tx.hash}>{tx.hash.substr(0, 8)}</a></td>
                   <td className="num"><a href={"https://bscscan.com/block/" + tx.blockNumber}>{tx.blockNumber}</a></td>
                   <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`}><Number value={ethers.BigNumber.from(tx.value)} decimals={decimals} suffix={suffix}/></td>
-                  <td className="num">${getUSD(tx.value)}</td>
+                  <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`}>${getUSD(tx.value)}</td>
                 </tr>
               )
             })}
