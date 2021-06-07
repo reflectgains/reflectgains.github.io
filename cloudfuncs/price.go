@@ -12,7 +12,8 @@ import (
 )
 
 type GetPriceInput struct {
-	Code string `json:"code"`
+	Code      string `json:"code"`
+	Timestamp int    `json:"timestamp"`
 }
 
 func GetPrice(w http.ResponseWriter, r *http.Request) {
@@ -39,11 +40,21 @@ func GetPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, _ := http.NewRequest(http.MethodPost, "https://api.livecoinwatch.com/coins/single", strings.NewReader(fmt.Sprintf(`{
-		"currency": "USD",
-		"code": "%s",
-		"meta": false
-	}`, parsed.Code)))
+	var req *http.Request
+	if parsed.Timestamp == 0 {
+		req, _ = http.NewRequest(http.MethodPost, "https://api.livecoinwatch.com/coins/single", strings.NewReader(fmt.Sprintf(`{
+			"currency": "USD",
+			"code": "%s",
+			"meta": false
+		}`, parsed.Code)))
+	} else {
+		req, _ = http.NewRequest(http.MethodPost, "https://api.livecoinwatch.com/coins/single/history", strings.NewReader(fmt.Sprintf(`{
+			"currency": "USD",
+			"code": "%s",
+			"start": %d,
+			"end": %d
+		}`, parsed.Code, parsed.Timestamp-100000, parsed.Timestamp+100000)))
+	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", os.Getenv("LCW_API_KEY"))

@@ -91,6 +91,8 @@ interface Transaction {
   tokenName: string
   tokenSymbol: string
   value: string
+  value_usd: number
+  basis: string
 }
 
 // Get a list of transactions for a smart contract where the given wallet
@@ -106,7 +108,125 @@ async function getTransactions(account: string, contract: string): Promise<Trans
       wallet: account,
     })
   })
-  return await resp.json()
+  const parsed = await resp.json()
+
+  // Merge dupes which are sometimes returned from the API.
+  for (let x = parsed.length - 1; x > 1; x--) {
+    if (parsed[x].hash == parsed[x-1].hash) {
+      parsed[x-1].value = ethers.BigNumber.from(parsed[x-1].value).add(parsed[x].value).toString()
+      parsed.splice(x, 1)
+    }
+  }
+
+  return parsed
+}
+
+// Try to get the price of a transaction, either directly from the API or
+// by crawling the transaction transfer log.
+async function getTransactionPrice(id: string, contract: string, symbol: string, timestamp: number): Promise<number> {
+  const cached = localStorage.getItem('txn-'+id)
+  if (cached != null && cached != '0') {
+    return parseFloat(cached)
+  }
+
+  const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-transaction', {
+    method: "post",
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      chain_id: 56,
+      transaction_id: id,
+    })
+  })
+  const parsed = await resp.json()
+  const txn = parsed.data.items[0]
+  let price = txn.value_quote
+
+  const addr = txn.from_address
+  if (price == 0) {
+    // Couldn't get the price from the API, so let's crawl the transaction
+    // contract logs to figure out what was transferred through BNB, if anything.
+
+    // Try using the gas quote rate (should be approx. BNB price at the time
+    // of the transaction) to determine price in USD.
+    const bnbPrice = ethers.utils.parseUnits(txn.gas_quote_rate.toString(), 18)
+
+    // First, find who transferred the tokens to our address, or which addresses
+    // we transferred tokens to if selling. This code works by following the
+    // trail to find the closest BNB conversion, then gets the approximate USD
+    // value of that BNB. This means it works for complex multi-token transfer
+    // transactions from decentralized exchanges.
+    let senders = []
+    let receivers = []
+    for (const log of txn.log_events) {
+      if (log.decoded && log.decoded.name === 'Transfer' && log.sender_address === contract) {
+        if (log.decoded.params && log.decoded.params[0].value === addr) {
+          // We sold our tokens: Transfer(from=me, ...)
+          // Receivers are the addresses we sold the tokens to, which may
+          // convert to BNB somewhere in the chain.
+          receivers.push(log.decoded.params[1].value)
+        } else if (log.decoded.params && log.decoded.params[1].value === addr) {
+          // We bought tokens: Transfer(to=me, ...)
+          // Senders are the addresses who sent us the tokens, which may have
+          // been given BNB somewhere in the chain.
+          senders.push(log.decoded.params[0].value)
+        }
+      }
+    }
+
+    // Next, find how many BNB the sender/receiver addresses took in for the
+    // transfer.
+    let bnb = ethers.BigNumber.from("0")
+    for (const sender of senders) {
+      for (const log of txn.log_events) {
+        if (log.decoded && log.decoded.name === 'Transfer') {
+          if (log.decoded.params && log.decoded.params[1].value == sender && log.sender_contract_ticker_symbol === 'WBNB') {
+            // BNB was spent to convert to our token.
+            bnb = bnb.add(log.decoded.params[2].value)
+          }
+        }
+      }
+    }
+    for (const receiver of receivers) {
+      for (const log of txn.log_events) {
+        if (log.decoded && log.decoded.name === 'Transfer') {
+          if (log.decoded.params && log.decoded.params[0].value == receiver && log.sender_contract_ticker_symbol === 'WBNB') {
+            // Tokens were spent to convert to BNB.
+            bnb = bnb.sub(log.decoded.params[2].value)
+          }
+        }
+      }
+    }
+
+    // Regardless of buy/sell we want a positive price, so get the absolute value.
+    const cost = bnbPrice.mul(bnb.abs())
+    price = parseFloat(ethers.utils.formatUnits(cost, 36))
+  }
+
+  if (price == 0) {
+    // Still nothing after looking for BNB transfers. Look for direct token
+    // transfers between wallets and try to find a historical token price if
+    // possible to calculate an approximate transaction price.
+    const lcwHistory = await tryGetLCWPrice(symbol, timestamp)
+    const lcwPrice = ethers.utils.parseUnits(lcwHistory.history[0].rate.toFixed(18), 18)
+
+    let tokens = ethers.BigNumber.from('0')
+    for (const log of txn.log_events) {
+      if (log.decoded && log.decoded.name === 'Transfer' && log.sender_address === contract) {
+        if (log.decoded.params && (log.decoded.params[0].value === addr || log.decoded.params[1].value === addr)) {
+          // This is a transfer of tokens into/out of the wallet.
+          tokens = tokens.add(log.decoded.params[2].value)
+        }
+      }
+    }
+
+    const cost = tokens.mul(lcwPrice)
+    price = parseFloat(ethers.utils.formatUnits(cost, 36))
+  }
+
+  localStorage.setItem('txn-'+id, price)
+  return price
 }
 
 // Describes information about the token, such as the name and current price.
@@ -121,7 +241,7 @@ interface TokenInfo {
 // Try to get the LiveCoinWatch price for the token symbol, which is usually
 // much more accurate than cached PancakeSwap data. If this fails, we can
 // always fall back on PancakeSwap.
-async function tryGetLCWPrice(symbol: string): Promise<any> {
+async function tryGetLCWPrice(symbol: string, timestamp: number = 0): Promise<any> {
   const resp = await fetch('https://us-central1-reflectgains.cloudfunctions.net/get-price', {
     method: "post",
     headers: {
@@ -129,6 +249,7 @@ async function tryGetLCWPrice(symbol: string): Promise<any> {
     },
     body: JSON.stringify({
       code: symbol,
+      timestamp,
     }),
   })
   return await resp.json()
@@ -188,7 +309,7 @@ function formatCurrency(value: string): string {
 // This is the entrypoint to the main application.
 function App() {
   const hash = window.location.hash.substr(1)
-  const contract = CONTRACTS[hash] || hash
+  const contract: string = CONTRACTS[hash] || hash
 
   // Contract address or short-name must be passed in the URI!
   if (!contract) {
@@ -205,6 +326,9 @@ function App() {
   const [bought, setBought] = useState<string>('0')
   const [totalBought, setTotalBought] = useState<string>('0')
   const [totalSold, setTotalSold] = useState<string>('0')
+  const [totalSpent, setTotalSpent] = useState<number>(0)
+  const [costBasis, setCostBasis] = useState<string>('0')
+  const [tokensPerUSD, setTokensPerUSD] = useState<string>('0')
   const [decimals, setDecimals] = useState<number>(18)
   const [tokenInfo, setTokenInfo] = useState<TokenInfo|null>(null)
   const [topCoins, setTopCoins] = useState<TopCoin[]>([])
@@ -262,23 +386,44 @@ function App() {
     let count = ethers.BigNumber.from(0)
     let positive = ethers.BigNumber.from(0)
     let negative = ethers.BigNumber.from(0)
+    let spent = 0
     for (const txn of transactions) {
+      try {
+        txn.value_usd = await getTransactionPrice(txn.hash, contract.toLowerCase(), tokenInfo.symbol, parseInt(txn.timeStamp) * 1000)
+      } catch (err) {
+        console.log(err)
+        txn.value_usd = 0
+      }
       const value = ethers.BigNumber.from(txn.value)
+      txn.basis = ethers.utils.formatUnits(ethers.utils.parseUnits(txn.value_usd.toFixed(18), decimals+13).div(value), 13)
+
       if (txn.to.toLowerCase() === account.toLowerCase()) {
         // Moving tokens to this wallet.
         count = count.add(value)
         positive = positive.add(value)
+        spent += txn.value_usd
       } else {
         // Moving tokens away from this wallet.
         count = count.sub(value)
         negative = negative.sub(value)
+        spent -= txn.value_usd
       }
     }
+
+    const spentBigNum = ethers.utils.parseUnits(spent.toString(), decimals+13)
+    const basis = spentBigNum.div(count)
+    setCostBasis(ethers.utils.formatUnits(basis, 13))
+    let tokens = ethers.BigNumber.from('10000000000000').div(basis)
+    for (let i = 0; i < decimals; i++) {
+      tokens = tokens.mul(10)
+    }
+    setTokensPerUSD(tokens.toString())
 
     setTransactions(transactions)
     setBought(count.toString())
     setTotalBought(positive.toString())
     setTotalSold(negative.toString())
+    setTotalSpent(spent)
     setLoading(false)
 
     if (transactions.length === 0) {
@@ -411,7 +556,7 @@ function App() {
             {totalSold != '0' && (
               <tr>
                 <th>Total Sold</th>
-                <td className="num"><Number value={totalSold} decimals={decimals} suffix={suffix}/></td>
+                <td className="num sell"><Number value={totalSold} decimals={decimals} suffix={suffix}/></td>
                 <td className="num">-</td>
               </tr>
             )}
@@ -460,15 +605,15 @@ function App() {
         </p>
         <h2>Your Transactions</h2>
         <p>
-          The following transactions were found for the given wallet address.
+          You made {transactions.length} transactions with a net spend of ${formatCurrency(totalSpent.toString())} and an average cost basis of ${costBasis} per {tokenInfo.symbol} (<Number value={tokensPerUSD} decimals={decimals} suffix={suffix}/> {tokenInfo.symbol} per USD). At today's price, you have a simple earnings percentage of {((parseFloat(balanceUSD.replace(',', '')) - totalSpent) / totalSpent * 100).toFixed(2)}%.
         </p>
         <table>
           <thead>
             <tr>
               <th>Date</th>
               <th>Short Hash</th>
-              <th className="num">Block</th>
               <th className="num">Tokens</th>
+              <th className="num">Spent USD</th>
               <th className="num">Current USD</th>
             </tr>
           </thead>
@@ -479,8 +624,8 @@ function App() {
                 <tr key={index}>
                   <td title={d.toISOString()}>{d.toLocaleString(navigator.language, dateOptions)}</td>
                   <td><a href={"https://bscscan.com/tx/" + tx.hash}>{tx.hash.substr(0, 8)}</a></td>
-                  <td className="num"><a href={"https://bscscan.com/block/" + tx.blockNumber}>{tx.blockNumber}</a></td>
                   <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`}><Number value={ethers.BigNumber.from(tx.value)} decimals={decimals} suffix={suffix}/></td>
+                  <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`} title={"$" + tx.basis + ' per ' + tokenInfo.symbol}>${tx.value_usd && formatCurrency(tx.value_usd.toString()) || '0.00'}</td>
                   <td className={`num ${tx.to.toLowerCase() === account.toLowerCase() ? '' : 'sell'}`}>${getUSD(tx.value)}</td>
                 </tr>
               )
@@ -490,7 +635,7 @@ function App() {
       </>
       )}
       <div className="tips">
-        Like the tool? Tips appreciated! Send ERC-20/BEP-20 to:
+        Like the tool? Tips appreciated! Send any ERC-20/BEP-20 token like {tokenInfo && tokenInfo.symbol} to:
         <br/>
         <span title="Click to copy" onClick={() => {navigator.clipboard.writeText("0x75289376fC9eB00833C6EDa235e019E286E1eeFD").then(() => {setCopied(true)})}} style={{cursor: "pointer"}}>0x75289376fC9eB00833C6EDa235e019E286E1eeFD {!copied && '📋' || '✅'}</span>
       </div>
