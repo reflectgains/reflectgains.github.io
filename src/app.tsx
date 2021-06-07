@@ -144,7 +144,7 @@ async function getTransactionPrice(id: string, contract: string, symbol: string,
   let price = txn.value_quote
 
   const addr = txn.from_address
-  if (price == 0) {
+  if (!price && txn.gas_quote_rate) {
     // Couldn't get the price from the API, so let's crawl the transaction
     // contract logs to figure out what was transferred through BNB, if anything.
 
@@ -204,7 +204,7 @@ async function getTransactionPrice(id: string, contract: string, symbol: string,
     price = parseFloat(ethers.utils.formatUnits(cost, 36))
   }
 
-  if (price == 0) {
+  if (!price) {
     // Still nothing after looking for BNB transfers. Look for direct token
     // transfers between wallets and try to find a historical token price if
     // possible to calculate an approximate transaction price.
@@ -387,9 +387,14 @@ function App() {
     let positive = ethers.BigNumber.from(0)
     let negative = ethers.BigNumber.from(0)
     let spent = 0
+    let basisSpent = 0
+    let basisCount = ethers.BigNumber.from(0)
     for (const txn of transactions) {
       try {
         txn.value_usd = await getTransactionPrice(txn.hash, contract.toLowerCase(), tokenInfo.symbol, parseInt(txn.timeStamp) * 1000)
+        if (isNaN(txn.value_usd)) {
+          txn.value_usd = 0
+        }
       } catch (err) {
         console.log(err)
         txn.value_usd = 0
@@ -402,6 +407,9 @@ function App() {
         count = count.add(value)
         positive = positive.add(value)
         spent += txn.value_usd
+
+        basisCount = basisCount.add(value)
+        basisSpent += txn.value_usd
       } else {
         // Moving tokens away from this wallet.
         count = count.sub(value)
@@ -410,8 +418,8 @@ function App() {
       }
     }
 
-    const spentBigNum = ethers.utils.parseUnits(spent.toString(), decimals+13)
-    const basis = spentBigNum.div(count)
+    const spentBigNum = ethers.utils.parseUnits(basisSpent.toString(), decimals+13)
+    const basis = spentBigNum.div(basisCount)
     setCostBasis(ethers.utils.formatUnits(basis, 13))
     let tokens = ethers.BigNumber.from('10000000000000').div(basis)
     for (let i = 0; i < decimals; i++) {

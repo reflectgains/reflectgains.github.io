@@ -53,7 +53,7 @@ func GetPrice(w http.ResponseWriter, r *http.Request) {
 			"code": "%s",
 			"start": %d,
 			"end": %d
-		}`, parsed.Code, parsed.Timestamp-100000, parsed.Timestamp+100000)))
+		}`, parsed.Code, parsed.Timestamp-150000, parsed.Timestamp+150000)))
 	}
 
 	req.Header.Set("Content-Type", "application/json")
