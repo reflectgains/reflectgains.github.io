@@ -12,6 +12,11 @@ const CONTRACTS = {
   pye: '0xaad87f47cdea777faf87e7602e91e3a6afbe4d57',
 }
 
+// Tax rates for well-known tokens.
+const TAX = {
+  '0xaad87f47cdea777faf87e7602e91e3a6afbe4d57': 0.1,
+}
+
 const ABI: string[] = [
   // Get the account balance
   "function balanceOf(address) view returns (uint)",
@@ -123,7 +128,7 @@ async function getTransactions(account: string, contract: string): Promise<Trans
 
 // Try to get the price of a transaction, either directly from the API or
 // by crawling the transaction transfer log.
-async function getTransactionPrice(id: string, contract: string, symbol: string, timestamp: number): Promise<number> {
+async function getTransactionPrice(id: string, addr: string, contract: string, symbol: string, timestamp: number): Promise<number> {
   const cached = localStorage.getItem('txn-'+id)
   if (cached != null && cached != '0') {
     return parseFloat(cached)
@@ -143,7 +148,6 @@ async function getTransactionPrice(id: string, contract: string, symbol: string,
   const txn = parsed.data.items[0]
   let price = txn.value_quote
 
-  const addr = txn.from_address
   if (!price && txn.gas_quote_rate) {
     // Couldn't get the price from the API, so let's crawl the transaction
     // contract logs to figure out what was transferred through BNB, if anything.
@@ -389,9 +393,10 @@ function App() {
     let spent = 0
     let basisSpent = 0
     let basisCount = ethers.BigNumber.from(0)
+    let basisTaxMultiplier = ethers.utils.parseEther((1.0 / (1.0 - (TAX[contract] || 0))).toFixed(18))
     for (const txn of transactions) {
       try {
-        txn.value_usd = await getTransactionPrice(txn.hash, contract.toLowerCase(), tokenInfo.symbol, parseInt(txn.timeStamp) * 1000)
+        txn.value_usd = await getTransactionPrice(txn.hash, account, contract.toLowerCase(), tokenInfo.symbol, parseInt(txn.timeStamp) * 1000)
         if (isNaN(txn.value_usd)) {
           txn.value_usd = 0
         }
@@ -400,7 +405,7 @@ function App() {
         txn.value_usd = 0
       }
       const value = ethers.BigNumber.from(txn.value)
-      txn.basis = ethers.utils.formatUnits(ethers.utils.parseUnits(txn.value_usd.toFixed(18), decimals+13).div(value), 13)
+      txn.basis = ethers.utils.formatUnits(ethers.utils.parseUnits(txn.value_usd.toFixed(18), decimals+13).div(value.mul(basisTaxMultiplier).div('100000000000000000')), 13)
 
       if (txn.to.toLowerCase() === account.toLowerCase()) {
         // Moving tokens to this wallet.
@@ -408,7 +413,8 @@ function App() {
         positive = positive.add(value)
         spent += txn.value_usd
 
-        basisCount = basisCount.add(value)
+        // Basis cost should include taxed tokens.
+        basisCount = basisCount.add(value.mul(basisTaxMultiplier).div('1000000000000000000'))
         basisSpent += txn.value_usd
       } else {
         // Moving tokens away from this wallet.
